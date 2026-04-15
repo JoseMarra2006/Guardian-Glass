@@ -1,52 +1,80 @@
 /**
  * @file aiGate.ts
- * @description Gateway de IA Seguro — "Coração" da solução PetroGate AR
+ * @description Gateway de IA Seguro — PetroGate AR Fase 3
  *
- * ARQUITETURA ZERO TRUST — PIPELINE DE SEGURANÇA:
+ * ─── PIPELINE DE SEGURANÇA ZERO TRUST ────────────────────────────────────────
  *
- * [Usuário/Smart Glasses]
- *       │
- *       ▼
- * [1. DLP Scanner] ──── Detecta e mascara PII/dados sensíveis
- *       │
- *       ▼
- * [2. Audit Logger] ─── Registra prompt original + mascarado no Supabase
- *       │                (imutável, com timestamp e device_id)
- *       ▼
- * [3. Risk Evaluator] ─ Bloqueia se severity HIGH detectada
- *       │
- *       ▼
- * [4. AI Gateway] ───── Envia APENAS o prompt mascarado para a IA externa
- *       │
- *       ▼
- * [5. Response Filter] ─ Sanitiza a resposta antes de retornar ao usuário
+ *   [Smart Glass / Operador]
+ *          │
+ *          ▼
+ *   [1. DLP Scanner]     ── Detecta e mascara PII/dados sensíveis
+ *          │                Calcula Score de Risco (0-100)
+ *          ▼
+ *   [2. Risk Evaluator]  ── Decide: CLEAN | SANITIZED | BLOCKED
+ *          │                Considera severidade individual + combinações
+ *          ▼
+ *   [3. Audit Logger]    ── Persiste SEMPRE no Supabase via auditService
+ *          │                Fail Secure: retry queue + console fallback
+ *          ▼
+ *   [4. Gate Decision]   ── Retorna erro se BLOCKED (nunca chama IA)
+ *          │
+ *          ▼
+ *   [5. AI Gateway]      ── Envia APENAS o prompt MASCARADO à IA externa
+ *          │
+ *          ▼
+ *   [6. Response Filter] ── Segunda passagem DLP na resposta da IA
+ *          │
+ *          ▼
+ *   [7. Return]          ── Resposta filtrada + metadados ao chamador
  *
- * PRINCÍPIOS APLICADOS:
- * - Least Privilege: A IA externa nunca vê dados reais
- * - Defense in Depth: Múltiplas camadas de verificação
- * - Immutable Audit Trail: Logs não podem ser alterados após criação
- * - Fail Secure: Em caso de erro, bloqueia ao invés de liberar
+ * ─── PRINCÍPIOS APLICADOS ────────────────────────────────────────────────────
+ * • Least Privilege:   A IA externa NUNCA vê dados reais — apenas placeholders
+ * • Defense in Depth:  DLP na entrada + DLP na saída
+ * • Immutable Audit:   Logs sempre gravados, mesmo em requisições bloqueadas
+ * • Fail Secure:       Em caso de falha, bloqueia em vez de liberar
+ * • Data Sovereignty:  Todos os logs permanecem no Supabase da organização
+ *
+ * ─── SEGURANÇA DA API KEY ────────────────────────────────────────────────────
+ * EXPO_PUBLIC_AI_API_KEY só deve ser usada em DESENVOLVIMENTO LOCAL.
+ *
+ * EM PRODUÇÃO, a API Key NUNCA deve estar no bundle do app móvel.
+ * O fluxo seguro é:
+ *
+ *   App → [JWT Supabase] → Supabase Edge Function (Deno)
+ *                                    │
+ *                             valida JWT + device_id
+ *                             aplica rate limiting
+ *                                    │
+ *                             → API Gemini/GPT (key no servidor)
+ *
+ * Assim, a API Key fica apenas no ambiente serverless do Supabase,
+ * nunca exposta no bundle JavaScript do aplicativo React Native.
+ * Configure EXPO_PUBLIC_AI_EDGE_URL para apontar ao Edge Function.
  */
 
 import {
   scanAndSanitize,
   detectSensitiveKeywords,
   DlpScanResult,
+  DLP_RULES,
 } from '../utils/dlpScanner';
-import { supabase, AuditLogRecord } from './supabaseClient';
+import {
+  persistAuditLog,
+  AuditLogPayload,
+} from './auditService';
 
-// ─── Interfaces ──────────────────────────────────────────────────────────────
+// ─── Interfaces ───────────────────────────────────────────────────────────────
 
 /**
- * Contexto do dispositivo/usuário que originou a requisição.
- * No PetroGate AR, o device_id identifica o Smart Glass específico.
+ * Contexto do dispositivo e operador que originou a requisição.
+ * Preenchido pelo AuthContext e obrigatório em toda chamada ao gateway.
  */
 export interface RequestContext {
-  /** E-mail corporativo do operador autenticado */
+  /** E-mail corporativo do operador autenticado (do AuthContext) */
   userEmail: string;
   /**
-   * ID único do dispositivo Smart Glass (ex: "SG-RJ-001").
-   * Em produção: obtido via expo-constants ou MDM enrollment.
+   * ID único do Smart Glass (do AuthContext via expo-application).
+   * Em produção: MDM enrollment ID para garantia de hardware binding.
    */
   deviceId: string;
   /** Módulo/tela da aplicação que originou a requisição */
@@ -54,32 +82,31 @@ export interface RequestContext {
 }
 
 /**
- * Resposta retornada pelo AI Gateway ao módulo solicitante.
+ * Resposta retornada pelo AI Gateway ao módulo solicitante (ex: VoiceInterface).
  */
 export interface AiGateResponse {
-  /** Indica se a requisição foi processada com sucesso */
   success: boolean;
-  /** Resposta da IA (já filtrada), presente quando success=true */
   aiResponse?: string;
-  /** Mensagem de erro, presente quando success=false */
   errorMessage?: string;
   /**
-   * Status do processamento DLP:
-   * - CLEAN: Nenhum dado sensível detectado
-   * - SANITIZED: Dados sensíveis mascarados, prompt enviado à IA
-   * - BLOCKED: Dados de alto risco detectados, requisição bloqueada
+   * Status da decisão DLP:
+   * - CLEAN:     Nenhum dado sensível detectado
+   * - SANITIZED: Dados mascarados, resposta da IA retornada
+   * - BLOCKED:   Tentativa de exfiltração detectada, requisição bloqueada
    */
   dlpStatus: 'CLEAN' | 'SANITIZED' | 'BLOCKED';
-  /** ID do log de auditoria gerado (para rastreabilidade) */
+  /** Pontuação de risco calculada (0-100) — visível no HUD para o operador */
+  riskScore: number;
+  /** Nível de risco: NONE | LOW | MEDIUM | HIGH | CRITICAL */
+  riskLevel: string;
+  /** ID do log de auditoria no Supabase (para rastreabilidade) */
   auditLogId?: string;
-  /** Regras DLP acionadas (para feedback ao usuário, se configurado) */
+  /** IDs das regras DLP acionadas */
   triggeredRules?: string[];
+  /** Descrições legíveis das categorias de dados bloqueados */
+  blockedDataCategories?: string[];
 }
 
-/**
- * Configuração da API de IA (Gemini/GPT).
- * Em produção, mover para variáveis de ambiente.
- */
 interface AiApiConfig {
   endpoint: string;
   model: string;
@@ -87,136 +114,130 @@ interface AiApiConfig {
   systemPrompt: string;
 }
 
-// ─── Configuração ─────────────────────────────────────────────────────────────
+// ─── Configuração da API de IA ────────────────────────────────────────────────
 
-/**
- * Configurações da API de IA.
- *
- * SEGURANÇA: A API Key JAMAIS deve estar hardcoded aqui.
- * Use EXPO_PUBLIC_AI_API_KEY para desenvolvimento e
- * um Supabase Edge Function como proxy em produção
- * (assim a key fica apenas no servidor, nunca no bundle do app).
- */
 const AI_API_CONFIG: AiApiConfig = {
-  // Para Gemini: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
-  // Para GPT:    https://api.openai.com/v1/chat/completions
-  endpoint: process.env.EXPO_PUBLIC_AI_ENDPOINT ?? 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+  // ── DESENVOLVIMENTO: endpoint direto (requer EXPO_PUBLIC_AI_API_KEY) ──
+  // ── PRODUÇÃO:        substituir por EXPO_PUBLIC_AI_EDGE_URL (Edge Function) ──
+  endpoint: process.env.EXPO_PUBLIC_AI_ENDPOINT
+    ?? 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
   model: process.env.EXPO_PUBLIC_AI_MODEL ?? 'gemini-2.0-flash',
   maxTokens: 1024,
   systemPrompt: `Você é um assistente técnico especializado em operações de petróleo e gás.
 Responda apenas com base em informações técnicas e procedimentos padrão da indústria.
 NUNCA solicite, armazene ou processe dados pessoais de funcionários.
-Se encontrar placeholders como [CPF_RESTRITO] ou [VALOR_RESTRITO], ignore-os e responda sobre o contexto técnico da pergunta.
-Responda sempre em português brasileiro.`,
+Se encontrar placeholders como [CPF_CONFIDENCIAL] ou [MATRÍCULA_CONFIDENCIAL],
+ignore-os completamente e responda sobre o contexto técnico da pergunta.
+Responda sempre em português brasileiro, de forma objetiva e técnica.`,
 };
 
-// ─── Funções Auxiliares ───────────────────────────────────────────────────────
+// ─── Lógica de Decisão DLP ────────────────────────────────────────────────────
 
 /**
- * Persiste o log de auditoria no Supabase.
+ * Determina o status DLP com base no resultado da varredura e no Score de Risco.
  *
- * ZERO TRUST: O log é sempre gravado, mesmo quando a requisição é bloqueada.
- * Tentativas de exfiltração bloqueadas são especialmente importantes para auditar.
+ * REGRAS DE BLOQUEIO (qualquer uma é suficiente):
+ * 1. Regra individual de severidade HIGH foi acionada
+ * 2. Score de Risco >= 60 (múltiplas ocorrências MEDIUM ou combinações perigosas)
+ * 3. Nível de risco é HIGH ou CRITICAL
  *
- * @param logData - Dados do log a serem persistidos
- * @returns ID do log criado, ou undefined em caso de falha
- */
-async function persistAuditLog(
-  logData: Omit<AuditLogRecord, 'id' | 'created_at'>
-): Promise<string | undefined> {
-  try {
-    const { data, error } = await supabase
-      .from('ai_audit_logs')
-      .insert(logData)
-      .select('id')
-      .single();
-
-    if (error) {
-      // Log de falha na auditoria — crítico para compliance
-      console.error('[PetroGate DLP] ALERTA: Falha ao persistir log de auditoria:', {
-        error: error.message,
-        code: error.code,
-        userEmail: logData.user_email,
-        deviceId: logData.device_id,
-        timestamp: new Date().toISOString(),
-      });
-      // FAIL SECURE: A falha de log não bloqueia a operação,
-      // mas é registrada localmente para investigação posterior.
-      return undefined;
-    }
-
-    return data?.id;
-  } catch (unexpectedError) {
-    console.error('[PetroGate DLP] CRÍTICO: Erro inesperado no audit logger:', unexpectedError);
-    return undefined;
-  }
-}
-
-/**
- * Determina o status DLP com base nos resultados da varredura.
- *
- * @param scanResult - Resultado do DLP Scanner
- * @returns Status de processamento
+ * Esta abordagem multi-camada captura tanto exfiltração direta (CPF explícito)
+ * quanto exfiltração indireta por acumulação (4 valores financeiros + nome + cargo).
  */
 function determineDlpStatus(
   scanResult: DlpScanResult
 ): 'CLEAN' | 'SANITIZED' | 'BLOCKED' {
-  if (scanResult.hasHighSeverityMatch) {
+  const { riskScore } = scanResult;
+
+  // Bloqueio por regra HIGH individual ou score/nível crítico
+  if (
+    scanResult.hasHighSeverityMatch ||
+    riskScore.decision === 'BLOCK' ||
+    riskScore.level === 'CRITICAL' ||
+    riskScore.level === 'HIGH'
+  ) {
     return 'BLOCKED';
   }
+
+  // Sanitização para dados MEDIUM/LOW
   if (scanResult.triggeredRules.length > 0) {
     return 'SANITIZED';
   }
+
   return 'CLEAN';
 }
 
 /**
- * Envia o prompt sanitizado para a API do Gemini.
- *
- * ARQUITETURA RECOMENDADA PARA PRODUÇÃO:
- * Esta função deve chamar um Supabase Edge Function (Deno) que atua como proxy.
- * O Edge Function mantém a API Key no servidor e adiciona rate limiting por device_id.
- * Nunca exponha a API Key no bundle do aplicativo móvel.
- *
- * @param sanitizedPrompt - Prompt já sanitizado pelo DLP Scanner
- * @returns Resposta da IA ou null em caso de falha
+ * Mapeia IDs de regras para descrições legíveis para exibição no HUD.
+ * Exemplos: "CPF" → "CPF — Cadastro de Pessoa Física"
  */
-async function callAiApi(sanitizedPrompt: string): Promise<string | null> {
+function resolveRuleDescriptions(ruleIds: string[]): string[] {
+  return ruleIds.map((id) => {
+    const rule = DLP_RULES.find((r) => r.id === id);
+    return rule ? `${id}: ${rule.description}` : id;
+  });
+}
+
+// ─── Chamada à API de IA ──────────────────────────────────────────────────────
+
+/**
+ * Envia o prompt sanitizado para a API de IA configurada.
+ *
+ * ─── IMPORTANTE: Proteção da API Key ─────────────────────────────────────────
+ * Em PRODUÇÃO, esta função NUNCA deve chamar a API da IA diretamente.
+ * Use um Supabase Edge Function como proxy:
+ *
+ *   // Configurar EXPO_PUBLIC_AI_EDGE_URL no .env.local
+ *   const EDGE_URL = process.env.EXPO_PUBLIC_AI_EDGE_URL;
+ *   if (EDGE_URL) {
+ *     const { data: { session } } = await supabase.auth.getSession();
+ *     return fetch(EDGE_URL, {
+ *       method: 'POST',
+ *       headers: {
+ *         'Authorization': `Bearer ${session?.access_token}`,
+ *         'Content-Type': 'application/json',
+ *       },
+ *       body: JSON.stringify({ prompt: sanitizedPrompt, deviceId }),
+ *     });
+ *   }
+ *
+ * O Edge Function valida o JWT, aplica rate limiting por device_id e
+ * encaminha para Gemini/GPT com a API Key armazenada apenas no servidor.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+async function callAiApi(
+  sanitizedPrompt: string,
+  deviceId: string
+): Promise<string | null> {
   const apiKey = process.env.EXPO_PUBLIC_AI_API_KEY;
 
   if (!apiKey) {
     console.warn(
-      '[PetroGate AI] API Key não configurada. ' +
-      'Configure EXPO_PUBLIC_AI_API_KEY ou use um Edge Function proxy.'
+      '[PetroGate AI] API Key não configurada. Usando resposta simulada.\n' +
+      'PRODUÇÃO: Configure EXPO_PUBLIC_AI_EDGE_URL para usar o Edge Function proxy.'
     );
-    // Em modo de desenvolvimento sem API key, retorna resposta simulada
     return simulateAiResponse(sanitizedPrompt);
   }
 
   try {
-    // ── Estrutura para Google Gemini API ──
     const requestBody = {
       contents: [
-        {
-          role: 'user',
-          parts: [{ text: sanitizedPrompt }],
-        },
+        { role: 'user', parts: [{ text: sanitizedPrompt }] },
       ],
       systemInstruction: {
         parts: [{ text: AI_API_CONFIG.systemPrompt }],
       },
       generationConfig: {
         maxOutputTokens: AI_API_CONFIG.maxTokens,
-        temperature: 0.3,        // Baixa temperatura = respostas mais determinísticas e seguras
+        temperature: 0.3,
         topP: 0.8,
         candidateCount: 1,
       },
       safetySettings: [
-        // Configurações de segurança máximas para contexto corporativo
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_LOW_AND_ABOVE' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_LOW_AND_ABOVE' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_LOW_AND_ABOVE' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_LOW_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_HARASSMENT',        threshold: 'BLOCK_LOW_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH',        threshold: 'BLOCK_LOW_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',  threshold: 'BLOCK_LOW_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT',  threshold: 'BLOCK_LOW_AND_ABOVE' },
       ],
     };
 
@@ -226,8 +247,8 @@ async function callAiApi(sanitizedPrompt: string): Promise<string | null> {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // Header personalizado para rastreamento no gateway da Petrobras
-          'X-PetroGate-Client': 'petrogate-ar-mobile/1.0',
+          'X-PetroGate-Client': 'petrogate-ar-mobile/3.0',
+          'X-PetroGate-Device': deviceId,
         },
         body: JSON.stringify(requestBody),
       }
@@ -235,48 +256,40 @@ async function callAiApi(sanitizedPrompt: string): Promise<string | null> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('[PetroGate AI] Erro na API:', response.status, errorText);
+      console.error('[PetroGate AI] Erro HTTP na API:', response.status, errorText);
       return null;
     }
 
     const data = await response.json();
-
-    // Extrai o texto da resposta do Gemini
-    const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const aiText: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!aiText) {
-      console.warn('[PetroGate AI] Resposta da IA sem conteúdo texto:', JSON.stringify(data));
+      console.warn('[PetroGate AI] Resposta sem conteúdo texto:', JSON.stringify(data));
       return null;
     }
 
     return aiText;
 
   } catch (networkError) {
-    console.error('[PetroGate AI] Erro de rede ao chamar API de IA:', networkError);
+    console.error('[PetroGate AI] Erro de rede:', networkError);
     return null;
   }
 }
 
-/**
- * Simula uma resposta da IA para desenvolvimento/testes sem API Key.
- * REMOVER EM PRODUÇÃO — apenas para validação do pipeline DLP.
- */
+/** Resposta simulada para desenvolvimento sem API Key configurada */
 function simulateAiResponse(prompt: string): string {
   return (
-    `[MODO SIMULAÇÃO - SEM API KEY CONFIGURADA]\n\n` +
-    `Prompt recebido (sanitizado): "${prompt.substring(0, 100)}..."\n\n` +
-    `Em produção, esta resposta viria do Gemini/GPT após análise do contexto técnico. ` +
-    `Configure EXPO_PUBLIC_AI_API_KEY para ativar a IA real.`
+    `[MODO SIMULAÇÃO — SEM API KEY]\n\n` +
+    `Prompt sanitizado recebido (${prompt.length} chars):\n` +
+    `"${prompt.substring(0, 120)}${prompt.length > 120 ? '...' : ''}"\n\n` +
+    `Configure EXPO_PUBLIC_AI_API_KEY (dev) ou EXPO_PUBLIC_AI_EDGE_URL (produção) ` +
+    `para ativar respostas reais do Gemini/GPT.`
   );
 }
 
 /**
- * Filtra a resposta da IA antes de retornar ao usuário.
- * Executa uma segunda passagem DLP na resposta para garantir que
- * a IA não "alucionou" dados sensíveis baseados no contexto mascarado.
- *
- * @param aiResponse - Resposta bruta da IA
- * @returns Resposta sanitizada
+ * Segunda passagem DLP na resposta da IA.
+ * Previne que a IA "alucine" dados sensíveis a partir dos placeholders.
  */
 function filterAiResponse(aiResponse: string): string {
   const responseScan = scanAndSanitize(aiResponse);
@@ -284,7 +297,7 @@ function filterAiResponse(aiResponse: string): string {
   if (responseScan.triggeredRules.length > 0) {
     console.warn(
       '[PetroGate DLP] ALERTA: IA gerou dados potencialmente sensíveis na resposta.',
-      'Regras acionadas:', responseScan.triggeredRules
+      { regras: responseScan.triggeredRules, riskScore: responseScan.riskScore.score }
     );
   }
 
@@ -294,20 +307,19 @@ function filterAiResponse(aiResponse: string): string {
 // ─── Gateway Principal ────────────────────────────────────────────────────────
 
 /**
- * Processa um prompt do usuário através do pipeline completo de segurança.
+ * Processa uma requisição de IA através do pipeline completo de segurança.
  *
- * FLUXO DETALHADO:
- * 1. DLP Scan: Identifica e mascara dados sensíveis no prompt
- * 2. Risk Assessment: Avalia severidade dos dados encontrados
- * 3. Audit Log: Persiste SEMPRE no Supabase (bloqueado ou não)
- * 4. Gate Decision: Bloqueia se HIGH severity detectada
- * 5. AI Call: Envia prompt MASCARADO para a IA
- * 6. Response Filter: Sanitiza a resposta da IA
- * 7. Return: Retorna resposta filtrada + metadados ao chamador
+ * INTEGRAÇÃO COM AuthContext:
+ * O parâmetro `context` deve ser preenchido com os dados do useAuth():
  *
- * @param userPrompt - Prompt bruto digitado pelo operador nos Smart Glasses
- * @param context - Contexto do dispositivo e usuário
- * @returns AiGateResponse com resposta da IA ou erro detalhado
+ *   const { userEmail, deviceId } = useAuth();
+ *   await processSecureAiRequest(prompt, { userEmail, deviceId, module: 'hud-ar' });
+ *
+ * O userEmail e deviceId são gravados em CADA log de auditoria, garantindo
+ * rastreabilidade completa para investigações de insider threat.
+ *
+ * @param userPrompt - Prompt bruto do operador (pode conter dados sensíveis)
+ * @param context    - Contexto de autenticação do dispositivo e operador
  */
 export async function processSecureAiRequest(
   userPrompt: string,
@@ -320,177 +332,144 @@ export async function processSecureAiRequest(
       success: false,
       errorMessage: 'Prompt não pode ser vazio.',
       dlpStatus: 'CLEAN',
+      riskScore: 0,
+      riskLevel: 'NONE',
     };
   }
 
   const trimmedPrompt = userPrompt.trim();
 
-  // ── ETAPA 1: DLP Scanning ──
+  // ── ETAPA 1: DLP Scanning + Score de Risco ──────────────────────────────────
   console.log('[PetroGate DLP] Iniciando varredura DLP...', {
     deviceId: context.deviceId,
+    userEmail: context.userEmail,
+    module: context.module ?? 'unknown',
     promptLength: trimmedPrompt.length,
   });
 
-  const dlpResult = scanAndSanitize(trimmedPrompt);
-  const sensitiveKeywords = detectSensitiveKeywords(trimmedPrompt);
-  const dlpStatus = determineDlpStatus(dlpResult);
+  const dlpResult      = scanAndSanitize(trimmedPrompt);
+  const sensitiveKws   = detectSensitiveKeywords(trimmedPrompt);
+  const dlpStatus      = determineDlpStatus(dlpResult);
+  const { riskScore }  = dlpResult;
 
   console.log('[PetroGate DLP] Varredura concluída:', {
-    status: dlpStatus,
-    triggeredRules: dlpResult.triggeredRules,
-    sensitiveKeywordsFound: sensitiveKeywords,
-    hasHighSeverity: dlpResult.hasHighSeverityMatch,
+    status:             dlpStatus,
+    riskScore:          riskScore.score,
+    riskLevel:          riskScore.level,
+    decision:           riskScore.decision,
+    triggeredRules:     dlpResult.triggeredRules,
+    highSeverityCount:  riskScore.highSeverityCount,
+    sensitiveKeywords:  sensitiveKws,
+    factors:            riskScore.factors,
   });
 
-  // ── ETAPA 2: Preparar log de auditoria ──
-  const auditLogData: Omit<AuditLogRecord, 'id' | 'created_at'> = {
-    user_email: context.userEmail,
-    device_id: context.deviceId,
-    original_prompt: trimmedPrompt,      // ATENÇÃO: Criptografar em produção (AES-256)
-    masked_prompt: dlpResult.sanitizedText,
-    triggered_rules: dlpResult.triggeredRules,
-    sensitive_keywords: sensitiveKeywords,
-    status: dlpStatus,
-    ai_response_preview: undefined,       // Será atualizado após resposta da IA
+  // ── ETAPA 2: Montar payload de auditoria ────────────────────────────────────
+  // deviceId e userEmail são SEMPRE incluídos para rastreabilidade completa.
+  // Mesmo requisições CLEAN são auditadas (baseline de comportamento normal).
+  const auditPayload: AuditLogPayload = {
+    user_email:         context.userEmail,       // do AuthContext
+    device_id:          context.deviceId,        // do AuthContext
+    original_prompt:    trimmedPrompt,           // ATENÇÃO: criptografar com AES-256 em produção
+    masked_prompt:      dlpResult.sanitizedText,
+    triggered_rules:    dlpResult.triggeredRules,
+    sensitive_keywords: sensitiveKws,
+    status:             dlpStatus,
+    ai_response_preview: null,                   // preenchido após resposta da IA
   };
 
-  // ── ETAPA 3: BLOQUEIO — Alta severidade ──
+  // ── ETAPA 3: BLOQUEIO — Alta severidade / Score crítico ────────────────────
   if (dlpStatus === 'BLOCKED') {
-    console.warn('[PetroGate DLP] BLOQUEIO: Dados de alto risco detectados.', {
-      userEmail: context.userEmail,
-      deviceId: context.deviceId,
-      rules: dlpResult.triggeredRules,
+    console.warn('[PetroGate DLP] BLOQUEIO DE SEGURANÇA:', {
+      userEmail:     context.userEmail,
+      deviceId:      context.deviceId,
+      riskScore:     riskScore.score,
+      riskLevel:     riskScore.level,
+      triggeredRules: dlpResult.triggeredRules,
+      factors:        riskScore.factors,
     });
 
-    // Log de tentativa BLOQUEADA — crucial para detecção de insider threats
-    const auditLogId = await persistAuditLog({
-      ...auditLogData,
+    // FAIL SECURE: o log é persistido antes de retornar o bloqueio.
+    // O auditService garante resiliência (retry queue) se o Supabase falhar.
+    const { auditLogId } = await persistAuditLog({
+      ...auditPayload,
       status: 'BLOCKED',
     });
+
+    const blockedCategories = resolveRuleDescriptions(dlpResult.triggeredRules);
 
     return {
       success: false,
       errorMessage:
-        'Requisição bloqueada pelo sistema de segurança DLP. ' +
-        'Dados sensíveis detectados no prompt. ' +
-        `Regras acionadas: ${dlpResult.triggeredRules.join(', ')}. ` +
-        'Esta tentativa foi registrada para auditoria.',
+        `POLÍTICA DE SEGURANÇA — REQUISIÇÃO BLOQUEADA\n\n` +
+        `Dados sensíveis detectados no prompt.\n` +
+        `Categorias identificadas: ${blockedCategories.join(' | ')}\n` +
+        `Score de Risco: ${riskScore.score}/100 (${riskScore.level})\n` +
+        `Operador: ${context.userEmail} · Dispositivo: ${context.deviceId}\n` +
+        `Esta tentativa foi registrada para auditoria de compliance (LGPD Art. 37).`,
       dlpStatus: 'BLOCKED',
+      riskScore: riskScore.score,
+      riskLevel: riskScore.level,
       auditLogId,
-      triggeredRules: dlpResult.triggeredRules,
+      triggeredRules:      dlpResult.triggeredRules,
+      blockedDataCategories: blockedCategories,
     };
   }
 
-  // ── ETAPA 4: Chamada à IA com prompt MASCARADO ──
+  // ── ETAPA 4: Chamada à IA com prompt MASCARADO ──────────────────────────────
   console.log('[PetroGate AI] Enviando prompt sanitizado para IA...', {
-    originalLength: trimmedPrompt.length,
+    originalLength:  trimmedPrompt.length,
     sanitizedLength: dlpResult.sanitizedText.length,
-    model: AI_API_CONFIG.model,
+    dlpStatus,
+    riskScore:       riskScore.score,
+    model:           AI_API_CONFIG.model,
   });
 
-  const rawAiResponse = await callAiApi(dlpResult.sanitizedText);
+  const rawAiResponse = await callAiApi(dlpResult.sanitizedText, context.deviceId);
 
   if (!rawAiResponse) {
-    // Falha na chamada à IA — log com status de erro
-    const auditLogId = await persistAuditLog({
-      ...auditLogData,
+    // IA indisponível — log com status de erro antes de retornar
+    const { auditLogId } = await persistAuditLog({
+      ...auditPayload,
       status: dlpStatus,
-      ai_response_preview: '[ERRO: Sem resposta da IA]',
+      ai_response_preview: '[ERRO: Serviço de IA indisponível]',
     });
 
     return {
       success: false,
       errorMessage: 'Serviço de IA temporariamente indisponível. Tente novamente.',
       dlpStatus,
+      riskScore: riskScore.score,
+      riskLevel: riskScore.level,
       auditLogId,
       triggeredRules: dlpResult.triggeredRules,
     };
   }
 
-  // ── ETAPA 5: Filtrar resposta da IA ──
+  // ── ETAPA 5: Segunda passagem DLP na resposta da IA ─────────────────────────
   const filteredResponse = filterAiResponse(rawAiResponse);
 
-  // ── ETAPA 6: Persistir log completo com preview da resposta ──
-  const auditLogId = await persistAuditLog({
-    ...auditLogData,
+  // ── ETAPA 6: Persistir log completo com preview da resposta ─────────────────
+  const { auditLogId } = await persistAuditLog({
+    ...auditPayload,
     status: dlpStatus,
-    // Apenas os primeiros 200 caracteres — evita logs excessivamente grandes
     ai_response_preview: filteredResponse.substring(0, 200),
   });
 
   console.log('[PetroGate AI] Requisição processada com sucesso:', {
     auditLogId,
     dlpStatus,
+    riskScore:      riskScore.score,
+    riskLevel:      riskScore.level,
     responseLength: filteredResponse.length,
   });
 
   return {
     success: true,
-    aiResponse: filteredResponse,
+    aiResponse:     filteredResponse,
     dlpStatus,
+    riskScore:      riskScore.score,
+    riskLevel:      riskScore.level,
     auditLogId,
     triggeredRules: dlpResult.triggeredRules,
-  };
-}
-
-/**
- * Utilitário para recuperar logs de auditoria de um dispositivo específico.
- * Útil para painéis de compliance e investigações de segurança.
- *
- * @param deviceId - ID do Smart Glass a consultar
- * @param limit - Máximo de registros retornados (padrão: 50)
- * @returns Array de registros de auditoria
- */
-export async function getAuditLogsForDevice(
-  deviceId: string,
-  limit: number = 50
-): Promise<AuditLogRecord[]> {
-  const { data, error } = await supabase
-    .from('ai_audit_logs')
-    .select('*')
-    .eq('device_id', deviceId)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    console.error('[PetroGate Audit] Erro ao recuperar logs:', error);
-    return [];
-  }
-
-  return data ?? [];
-}
-
-/**
- * Retorna estatísticas de segurança agregadas para um período.
- * Usado pelo dashboard de compliance do time de Segurança da Informação.
- *
- * @param startDate - Data inicial (ISO 8601)
- * @param endDate - Data final (ISO 8601)
- */
-export async function getSecurityStats(
-  startDate: string,
-  endDate: string
-): Promise<{
-  totalRequests: number;
-  blockedRequests: number;
-  sanitizedRequests: number;
-  cleanRequests: number;
-}> {
-  const { data, error } = await supabase
-    .from('ai_audit_logs')
-    .select('status')
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
-
-  if (error || !data) {
-    console.error('[PetroGate Audit] Erro ao calcular estatísticas:', error);
-    return { totalRequests: 0, blockedRequests: 0, sanitizedRequests: 0, cleanRequests: 0 };
-  }
-
-  return {
-    totalRequests: data.length,
-    blockedRequests: data.filter((r) => r.status === 'BLOCKED').length,
-    sanitizedRequests: data.filter((r) => r.status === 'SANITIZED').length,
-    cleanRequests: data.filter((r) => r.status === 'CLEAN').length,
   };
 }

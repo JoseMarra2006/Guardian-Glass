@@ -448,11 +448,20 @@ export default function VoiceInterface({
       {/* ── Resposta da IA ── */}
       {isAiResponse && aiResponse && (
         <View style={styles.aiResponseBox}>
-          {/* Header com DLP Status */}
+          {/* Header: DLP Status + Risk Score */}
           <View style={styles.aiResponseHeader}>
             <Text style={styles.aiResponseLabel}>RESPOSTA DA IA</Text>
-            <View style={[styles.dlpBadge, { backgroundColor: dlpBadgeColor }]}>
-              <Text style={styles.dlpBadgeText}>{aiResponse.dlpStatus}</Text>
+            <View style={styles.badgeRow}>
+              {/* DLP Status badge */}
+              <View style={[styles.dlpBadge, { backgroundColor: dlpBadgeColor }]}>
+                <Text style={styles.dlpBadgeText}>{aiResponse.dlpStatus}</Text>
+              </View>
+              {/* Risk Score badge */}
+              <View style={[styles.riskBadge, { backgroundColor: getRiskBadgeColor(aiResponse.riskLevel) }]}>
+                <Text style={styles.riskBadgeText}>
+                  RISCO {aiResponse.riskScore}/100
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -461,15 +470,26 @@ export default function VoiceInterface({
               {aiResponse.aiResponse}
             </Text>
           ) : (
-            <Text style={styles.aiBlockedText}>
-              {aiResponse.errorMessage}
-            </Text>
+            <>
+              <Text style={styles.aiBlockedText}>
+                {aiResponse.errorMessage}
+              </Text>
+              {/* Categorias de dados bloqueados */}
+              {aiResponse.blockedDataCategories && aiResponse.blockedDataCategories.length > 0 && (
+                <View style={styles.blockedCategoriesBox}>
+                  <Text style={styles.blockedCategoriesLabel}>DADOS IDENTIFICADOS:</Text>
+                  {aiResponse.blockedDataCategories.map((cat, i) => (
+                    <Text key={i} style={styles.blockedCategoryItem}>· {cat}</Text>
+                  ))}
+                </View>
+              )}
+            </>
           )}
 
           {/* Audit Log ID */}
           {aiResponse.auditLogId && (
             <Text style={styles.auditId}>
-              LOG#{aiResponse.auditLogId.slice(0, 8).toUpperCase()}
+              AUDIT · LOG#{aiResponse.auditLogId.slice(0, 8).toUpperCase()} · {aiResponse.riskLevel}
             </Text>
           )}
 
@@ -602,6 +622,17 @@ function getDlpBadgeColor(status?: 'CLEAN' | 'SANITIZED' | 'BLOCKED'): string {
   }
 }
 
+function getRiskBadgeColor(level?: string): string {
+  switch (level) {
+    case 'NONE':     return '#1A3A4A';
+    case 'LOW':      return '#00FFB215';
+    case 'MEDIUM':   return '#FFB80025';
+    case 'HIGH':     return '#FF456025';
+    case 'CRITICAL': return '#FF000035';
+    default:         return '#1A3A4A';
+  }
+}
+
 // ─── Estilos ──────────────────────────────────────────────────────────────────
 
 const MIC_SIZE = 80;
@@ -722,6 +753,11 @@ const styles = StyleSheet.create({
     letterSpacing: 3,
     color: C.text,
   },
+  badgeRow: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+  },
   dlpBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -734,6 +770,20 @@ const styles = StyleSheet.create({
     color: C.neon,
     letterSpacing: 1,
   },
+  riskBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 2,
+    borderWidth: 1,
+    borderColor: '#FFFFFF15',
+  },
+  riskBadgeText: {
+    fontFamily: MONO,
+    fontSize: 7,
+    fontWeight: '700',
+    color: C.text,
+    letterSpacing: 0.5,
+  },
   aiResponseText: {
     fontFamily: MONO,
     fontSize: 12,
@@ -745,6 +795,29 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: C.error,
     lineHeight: 18,
+  },
+  blockedCategoriesBox: {
+    backgroundColor: '#FF456010',
+    borderWidth: 1,
+    borderColor: '#FF456030',
+    borderRadius: 3,
+    padding: 10,
+    gap: 4,
+    marginTop: 4,
+  },
+  blockedCategoriesLabel: {
+    fontFamily: MONO,
+    fontSize: 8,
+    color: C.error,
+    letterSpacing: 2,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  blockedCategoryItem: {
+    fontFamily: MONO,
+    fontSize: 10,
+    color: C.white,
+    lineHeight: 16,
   },
   auditId: {
     fontFamily: MONO,
