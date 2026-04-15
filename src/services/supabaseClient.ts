@@ -69,37 +69,81 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 // ─── Database Types ──────────────────────────────────────────────────────────
 
 /**
- * Tipagem da tabela de logs de auditoria.
+ * Tipagem da tabela de logs de auditoria usada em aiGate.ts.
  * Espelha exatamente o schema SQL definido no Supabase.
  */
 export interface AuditLogRecord {
-  id?: string;                    // UUID gerado pelo Supabase
+  id?: string;                   // UUID gerado pelo Supabase
   user_email: string;
   device_id: string;
-  original_prompt: string;        // Em produção: deve ser criptografado com AES-256
+  original_prompt: string;       // Em produção: deve ser criptografado com AES-256
   masked_prompt: string;
   triggered_rules: string[];
   sensitive_keywords: string[];
   status: 'BLOCKED' | 'SANITIZED' | 'CLEAN';
-  ai_response_preview?: string;   // Primeiros 200 chars da resposta da IA
-  created_at?: string;            // Preenchido automaticamente pelo Supabase
+  ai_response_preview?: string | null;  // Primeiros 200 chars da resposta da IA
+  created_at?: string;           // Preenchido automaticamente pelo Supabase
 }
 
 /**
- * Interface para os tipos do banco de dados (necessário para o client tipado).
- * Expanda conforme novas tabelas forem adicionadas ao schema.
+ * Tipo do banco de dados para o cliente Supabase tipado.
+ *
+ * CORREÇÃO DE TIPAGEM (@supabase/supabase-js v2.103+):
+ * A partir da versão 2.103 o cliente usa PostgrestVersion "12" internamente,
+ * que exige um `type` (não `interface`) com todos os campos explicitamente
+ * declarados por coluna em Row/Insert/Update, além das seções obrigatórias
+ * Views, Functions, Enums e CompositeTypes. Sem isso, o compilador resolve
+ * o tipo da tabela como `never`, causando erros em .insert(), .select(), etc.
  */
-export interface Database {
+export type Database = {
   public: {
     Tables: {
       ai_audit_logs: {
-        Row: AuditLogRecord;
-        Insert: Omit<AuditLogRecord, 'id' | 'created_at'>;
-        Update: Partial<AuditLogRecord>;
+        Row: {
+          id: string;
+          user_email: string;
+          device_id: string;
+          original_prompt: string;
+          masked_prompt: string;
+          triggered_rules: string[];
+          sensitive_keywords: string[];
+          status: 'BLOCKED' | 'SANITIZED' | 'CLEAN';
+          ai_response_preview: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_email: string;
+          device_id: string;
+          original_prompt: string;
+          masked_prompt: string;
+          triggered_rules?: string[];
+          sensitive_keywords?: string[];
+          status: 'BLOCKED' | 'SANITIZED' | 'CLEAN';
+          ai_response_preview?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_email?: string;
+          device_id?: string;
+          original_prompt?: string;
+          masked_prompt?: string;
+          triggered_rules?: string[];
+          sensitive_keywords?: string[];
+          status?: 'BLOCKED' | 'SANITIZED' | 'CLEAN';
+          ai_response_preview?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
       };
     };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
   };
-}
+};
 
 // ─── Singleton Client ─────────────────────────────────────────────────────────
 
