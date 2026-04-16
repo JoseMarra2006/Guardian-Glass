@@ -85,6 +85,18 @@ export interface AuditLogRecord {
   created_at?: string;           // Preenchido automaticamente pelo Supabase
 }
 
+export interface UserBiometricBindingRecord {
+  id?: string;
+  user_id: string;
+  user_email: string;
+  device_id: string;
+  biometric_enabled: boolean;
+  preferred_method: 'fingerprint' | 'face' | 'any';
+  last_biometric_login_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 /**
  * Tipo do banco de dados para o cliente Supabase tipado.
  *
@@ -134,6 +146,42 @@ export type Database = {
           status?: 'BLOCKED' | 'SANITIZED' | 'CLEAN';
           ai_response_preview?: string | null;
           created_at?: string;
+        };
+        Relationships: [];
+      };
+      user_biometric_bindings: {
+        Row: {
+          id: string;
+          user_id: string;
+          user_email: string;
+          device_id: string;
+          biometric_enabled: boolean;
+          preferred_method: 'fingerprint' | 'face' | 'any';
+          last_biometric_login_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          user_email: string;
+          device_id: string;
+          biometric_enabled?: boolean;
+          preferred_method?: 'fingerprint' | 'face' | 'any';
+          last_biometric_login_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          user_email?: string;
+          device_id?: string;
+          biometric_enabled?: boolean;
+          preferred_method?: 'fingerprint' | 'face' | 'any';
+          last_biometric_login_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
         };
         Relationships: [];
       };

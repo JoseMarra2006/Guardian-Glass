@@ -1,32 +1,24 @@
-/**
- * @file login.tsx
- * @description Tela de Login do PetroGate AR
- *
- * Autenticação via Supabase Auth com email + senha corporativa.
- * Fase 1 do projeto — integração com Zero Trust AuthContext.
- */
-
 import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
   TextInput,
-  Pressable,
   StyleSheet,
-  Platform,
-  KeyboardAvoidingView,
+  Pressable,
   ActivityIndicator,
-  Switch,
+  KeyboardAvoidingView,
+  Platform,
+  Dimensions,
+  Alert,
 } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
 import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import Constants from 'expo-constants';
 
-// ─── Tokens de Design ─────────────────────────────────────────────────────────
+const { width } = Dimensions.get('window');
 
 const C = {
-  dark:   '#050C11',
-  panel:  '#0D1F2D',
+  bg:     '#050C11',
   mid:    '#1A3A4A',
   neon:   '#00FFB2',
   text:   '#8BBCCC',
@@ -36,304 +28,259 @@ const C = {
 
 const MONO = Platform.OS === 'ios' ? 'Courier New' : 'monospace';
 
-// ─── Tela de Login ────────────────────────────────────────────────────────────
-
 export default function LoginScreen() {
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [enableBiometricAfterLogin, setEnableBiometricAfterLogin] = useState(true);
-  const {
-    isBiometricAvailable,
-    isBiometricEnabled,
-    signInWithBiometrics,
-    setBiometricEnabled,
-  } = useAuth();
+  const [wsStatus, setWsStatus] = useState<'off' | 'on'>('off');
+  
+  const { signInWithRFID } = useAuth();
 
-  const handleLogin = useCallback(async () => {
-    if (!email.trim() || !password.trim()) {
-      setErrorMsg('Preencha email e senha corporativos.');
-      return;
-    }
-
-    setIsLoading(true);
+  const handlePasswordLogin = useCallback(async () => {
     setErrorMsg('');
+    setIsLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password,
-    });
-
-    if (error) {
-      console.error('[PetroGate Login] Falha de autenticação:', error.message);
-      setErrorMsg('Credenciais inválidas. Verifique com o administrador do sistema.');
-      setIsLoading(false);
-      return;
-    }
-
-    if (enableBiometricAfterLogin && isBiometricAvailable) {
-      const enabled = await setBiometricEnabled(true);
-      if (!enabled) {
-        setErrorMsg('Login efetuado, mas a biometria não foi ativada. Você pode usar senha.');
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setErrorMsg('ID ou Senha inválidos. Verifique as credenciais.');
       }
-    } else if (!enableBiometricAfterLogin && isBiometricEnabled) {
-      await setBiometricEnabled(false);
+    } catch (err) {
+      setErrorMsg('Erro de conexão. Tente novamente.');
+    } finally {
+      setIsLoading(false);
     }
+  }, [email, password]);
 
-    setIsLoading(false);
-    // Sucesso: AuthContext.onAuthStateChange dispara automaticamente → App.tsx redireciona
-  }, [email, enableBiometricAfterLogin, isBiometricAvailable, isBiometricEnabled, password, setBiometricEnabled]);
-
-  const handleBiometricLogin = useCallback(async () => {
+  const handleRFIDLogin = useCallback(async () => {
     setErrorMsg('');
     setIsLoading(true);
-
-    const success = await signInWithBiometrics();
+    console.log('[PetroGate Login] Aguardando leitura RFID...');
+    
+    // Simulação: UID fixo para teste
+    const success = await signInWithRFID('A1B2C3D4');
     if (!success) {
-      setErrorMsg('Falha na biometria. Faça login com email/CPF e senha.');
+      setErrorMsg('Cartão RFID não reconhecido ou não vinculado.');
     }
-
     setIsLoading(false);
-  }, [signInWithBiometrics]);
+  }, [signInWithRFID]);
+
+  // AUTO-LISTENER: Escuta o RFID via WebSocket (Ponte com o PC)
+  React.useEffect(() => {
+    const debuggerHost = Constants.expoConfig?.hostUri;
+    const pcIp = debuggerHost?.split(':')[0] || '10.112.48.48';
+    
+    console.log(`[PetroGate RFID] Conectando na ponte em: ws://${pcIp}:8082`);
+    const ws = new WebSocket(`ws://${pcIp}:8082`);
+
+    ws.onopen = () => {
+      console.log('[PetroGate RFID] Conectado à ponte serial do PC.');
+      setWsStatus('on');
+    };
+
+    ws.onmessage = async (e) => {
+      const uid = e.data;
+      // Só tenta logar se já não estiver carregando
+      if (uid && !isLoading) {
+        setIsLoading(true);
+        try {
+          const ok = await signInWithRFID(uid);
+          if (!ok) {
+            Alert.alert('Acesso Negado', `O cartão ${uid} não possui vínculo no Supabase.`);
+          }
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    ws.onerror = () => {
+      setWsStatus('off');
+    };
+
+    return () => ws.close();
+  }, [signInWithRFID, isLoading]);
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <StatusBar style="light" backgroundColor={C.dark} />
-
-      {/* Logo */}
-      <View style={styles.logoArea}>
-        <View style={styles.diamond}>
-          <Text style={styles.diamondText}>P</Text>
-        </View>
-        <Text style={styles.title}>PETROGATE AR</Text>
-        <Text style={styles.subtitle}>AUTENTICAÇÃO DE OPERADOR</Text>
+      <View style={styles.header}>
+        <Text style={styles.brand}>GUARDIAN GLASS</Text>
+        <Text style={styles.subtitle}>SISTEMA DE ACESSO RFID</Text>
       </View>
 
-      {/* Formulário */}
       <View style={styles.form}>
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>EMAIL CORPORATIVO</Text>
-          <TextInput
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="operador@petrobras.com.br"
-            placeholderTextColor={`${C.text}60`}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoComplete="email"
-            editable={!isLoading}
-          />
-        </View>
+        <Text style={styles.label}>EMAIL CORPORATIVO</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="ex: operador@petrobras.com.br"
+          placeholderTextColor={`${C.text}60`}
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          editable={!isLoading}
+        />
 
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>SENHA</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            placeholder="••••••••"
-            placeholderTextColor={`${C.text}60`}
-            secureTextEntry
-            autoComplete="password"
-            editable={!isLoading}
-            onSubmitEditing={handleLogin}
-          />
-        </View>
+        <Text style={styles.label}>CHAVE DE ACESSO</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="••••••••"
+          placeholderTextColor={`${C.text}60`}
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          editable={!isLoading}
+        />
 
-        {errorMsg !== '' && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{errorMsg}</Text>
-          </View>
-        )}
+        {errorMsg !== '' && <Text style={styles.errorText}>{errorMsg}</Text>}
 
         <Pressable
-          onPress={handleLogin}
+          onPress={handlePasswordLogin}
           disabled={isLoading}
           style={({ pressed }) => [
             styles.loginBtn,
-            pressed && !isLoading && { opacity: 0.8 },
+            pressed && { opacity: 0.8 },
             isLoading && { opacity: 0.6 },
           ]}
         >
           {isLoading ? (
-            <ActivityIndicator size="small" color={C.dark} />
+            <ActivityIndicator color={C.bg} />
           ) : (
-            <Text style={styles.loginBtnText}>[ AUTENTICAR ]</Text>
+            <Text style={styles.loginBtnText}>ENTRAR COM SENHA</Text>
           )}
         </Pressable>
 
-        {isBiometricAvailable && (
-          <>
-            <Pressable
-              onPress={handleBiometricLogin}
-              disabled={isLoading || !isBiometricEnabled}
-              style={({ pressed }) => [
-                styles.biometricBtn,
-                pressed && !isLoading && isBiometricEnabled && { opacity: 0.8 },
-                (isLoading || !isBiometricEnabled) && { opacity: 0.6 },
-              ]}
-            >
-              <Text style={styles.biometricBtnText}>ENTRAR COM BIOMETRIA</Text>
-            </Pressable>
+        <View style={styles.divider} />
 
-            <View style={styles.toggleRow}>
-              <Text style={styles.toggleLabel}>ATIVAR BIOMETRIA NESTE DISPOSITIVO</Text>
-              <Switch
-                value={enableBiometricAfterLogin}
-                onValueChange={setEnableBiometricAfterLogin}
-                disabled={isLoading}
-                trackColor={{ false: `${C.mid}`, true: `${C.neon}80` }}
-                thumbColor={enableBiometricAfterLogin ? C.neon : C.text}
-              />
-            </View>
-          </>
-        )}
+        <Pressable
+          onPress={handleRFIDLogin}
+          disabled={isLoading}
+          style={({ pressed }) => [
+            styles.rfidBtn,
+            pressed && { opacity: 0.8 },
+            isLoading && { opacity: 0.6 },
+          ]}
+        >
+          <Text style={styles.rfidBtnText}>
+            {wsStatus === 'on' ? '🟢 AGUARDANDO CARTÃO...' : 'APROXIMAR CARTÃO RFID'}
+          </Text>
+        </Pressable>
+        
+        <Text style={styles.info}>
+          Aproxime o cartão do leitor Arduino para autenticação rápida.
+        </Text>
       </View>
 
       <Text style={styles.footer}>
-        ZERO TRUST · DLP ATIVO · AUDITORIA CONTÍNUA
+        ZERO TRUST · RFID ACTIVE · AUDITORIA
       </Text>
     </KeyboardAvoidingView>
   );
 }
 
-// ─── Estilos ──────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: C.dark,
+    backgroundColor: C.bg,
     justifyContent: 'center',
-    paddingHorizontal: 32,
-    gap: 40,
+    padding: 30,
   },
-  logoArea: {
+  header: {
     alignItems: 'center',
-    gap: 12,
+    marginBottom: 40,
   },
-  diamond: {
-    width: 56,
-    height: 56,
-    backgroundColor: C.neon,
-    transform: [{ rotate: '45deg' }],
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  diamondText: {
-    color: C.dark,
-    fontSize: 24,
+  brand: {
+    fontSize: 28,
     fontWeight: '900',
-    transform: [{ rotate: '-45deg' }],
-    fontFamily: MONO,
-  },
-  title: {
-    color: C.white,
-    fontSize: 22,
-    fontWeight: '700',
-    letterSpacing: 6,
-    fontFamily: MONO,
+    color: C.neon,
+    letterSpacing: 4,
   },
   subtitle: {
-    color: C.neon,
-    fontSize: 9,
-    letterSpacing: 3,
+    fontSize: 10,
+    color: C.text,
+    letterSpacing: 2,
+    marginTop: 5,
     fontFamily: MONO,
   },
   form: {
-    gap: 18,
+    width: '100%',
   },
-  field: {
-    gap: 6,
-  },
-  fieldLabel: {
-    fontFamily: MONO,
+  label: {
     fontSize: 9,
     color: C.text,
-    letterSpacing: 2.5,
+    marginBottom: 8,
+    fontFamily: MONO,
+    letterSpacing: 1.5,
   },
   input: {
-    borderWidth: 1,
-    borderColor: `${C.mid}`,
-    borderRadius: 3,
-    backgroundColor: C.panel,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    backgroundColor: C.mid,
+    borderRadius: 4,
+    padding: 15,
     color: C.white,
+    marginBottom: 20,
     fontFamily: MONO,
-    fontSize: 13,
-  },
-  errorBox: {
-    backgroundColor: '#FF456020',
-    borderWidth: 1,
-    borderColor: '#FF456060',
-    borderRadius: 3,
-    padding: 12,
-  },
-  errorText: {
-    fontFamily: MONO,
-    fontSize: 11,
-    color: C.error,
-    lineHeight: 17,
+    fontSize: 14,
   },
   loginBtn: {
     backgroundColor: C.neon,
     paddingVertical: 16,
-    borderRadius: 3,
+    borderRadius: 4,
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 10,
   },
   loginBtnText: {
-    fontFamily: MONO,
+    color: C.bg,
+    fontWeight: '900',
+    letterSpacing: 1.5,
     fontSize: 13,
-    fontWeight: '700',
-    color: C.dark,
-    letterSpacing: 3,
   },
-  biometricBtn: {
+  rfidBtn: {
+    backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: `${C.neon}80`,
+    borderColor: C.neon,
     paddingVertical: 14,
-    borderRadius: 3,
+    borderRadius: 4,
     alignItems: 'center',
-    marginTop: 6,
-    backgroundColor: `${C.neon}10`,
+    marginTop: 10,
   },
-  biometricBtnText: {
-    fontFamily: MONO,
-    fontSize: 11,
+  rfidBtnText: {
     color: C.neon,
-    letterSpacing: 2,
     fontWeight: '700',
+    letterSpacing: 1,
+    fontSize: 12,
   },
-  toggleRow: {
-    marginTop: 6,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: `${C.mid}80`,
-    borderRadius: 3,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+  divider: {
+    height: 1,
+    backgroundColor: C.mid,
+    marginVertical: 25,
   },
-  toggleLabel: {
-    flex: 1,
+  errorText: {
+    color: C.error,
+    fontSize: 11,
     fontFamily: MONO,
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+  info: {
+    color: `${C.text}60`,
     fontSize: 9,
-    color: C.text,
-    letterSpacing: 1.2,
-    marginRight: 8,
+    textAlign: 'center',
+    marginTop: 15,
+    fontFamily: MONO,
   },
   footer: {
-    fontFamily: MONO,
-    fontSize: 8,
-    color: `${C.text}60`,
+    position: 'absolute',
+    bottom: 30,
+    left: 0,
+    right: 0,
     textAlign: 'center',
+    color: `${C.text}40`,
+    fontSize: 8,
     letterSpacing: 2,
+    fontFamily: MONO,
   },
 });

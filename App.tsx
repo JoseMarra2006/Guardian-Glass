@@ -1,13 +1,3 @@
-/**
- * @file App.tsx
- * @description Entry point do PetroGate AR.
- *
- * FLUXO DE AUTENTICAÇÃO:
- *   Carregando        → Tela de splash (ActivityIndicator)
- *   Não autenticado   → <LoginScreen />
- *   Autenticado       → <HudScreen />  (HUD de Realidade Aumentada + Interface de Voz)
- */
-
 import React from 'react';
 import {
   View,
@@ -19,10 +9,16 @@ import { AuthProvider, useAuth } from './src/context/AuthContext';
 import LoginScreen from './src/app/login';
 import HudScreen from './src/app/index';
 
-// ─── Roteador de Autenticação ─────────────────────────────────────────────────
+/**
+ * @file App.tsx
+ * @description Roteador de Autenticação simplificado para RFID e Senha.
+ */
 
 function AppRouter() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading,
+  } = useAuth();
 
   if (isLoading) {
     return (
@@ -35,8 +31,6 @@ function AppRouter() {
   return isAuthenticated ? <HudScreen /> : <LoginScreen />;
 }
 
-// ─── Root Component ───────────────────────────────────────────────────────────
-
 export default function App() {
   return (
     <AuthProvider>
@@ -44,8 +38,6 @@ export default function App() {
     </AuthProvider>
   );
 }
-
-// ─── Estilos ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   splash: {
