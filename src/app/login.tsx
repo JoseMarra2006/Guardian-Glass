@@ -16,10 +16,11 @@ import {
   Platform,
   KeyboardAvoidingView,
   ActivityIndicator,
-  Alert,
+  Switch,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { supabase } from '../services/supabaseClient';
+import { useAuth } from '../context/AuthContext';
 
 // ─── Tokens de Design ─────────────────────────────────────────────────────────
 
@@ -42,6 +43,13 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [enableBiometricAfterLogin, setEnableBiometricAfterLogin] = useState(true);
+  const {
+    isBiometricAvailable,
+    isBiometricEnabled,
+    signInWithBiometrics,
+    setBiometricEnabled,
+  } = useAuth();
 
   const handleLogin = useCallback(async () => {
     if (!email.trim() || !password.trim()) {
@@ -57,14 +65,37 @@ export default function LoginScreen() {
       password,
     });
 
-    setIsLoading(false);
-
     if (error) {
       console.error('[PetroGate Login] Falha de autenticação:', error.message);
       setErrorMsg('Credenciais inválidas. Verifique com o administrador do sistema.');
+      setIsLoading(false);
+      return;
     }
+
+    if (enableBiometricAfterLogin && isBiometricAvailable) {
+      const enabled = await setBiometricEnabled(true);
+      if (!enabled) {
+        setErrorMsg('Login efetuado, mas a biometria não foi ativada. Você pode usar senha.');
+      }
+    } else if (!enableBiometricAfterLogin && isBiometricEnabled) {
+      await setBiometricEnabled(false);
+    }
+
+    setIsLoading(false);
     // Sucesso: AuthContext.onAuthStateChange dispara automaticamente → App.tsx redireciona
-  }, [email, password]);
+  }, [email, enableBiometricAfterLogin, isBiometricAvailable, isBiometricEnabled, password, setBiometricEnabled]);
+
+  const handleBiometricLogin = useCallback(async () => {
+    setErrorMsg('');
+    setIsLoading(true);
+
+    const success = await signInWithBiometrics();
+    if (!success) {
+      setErrorMsg('Falha na biometria. Faça login com email/CPF e senha.');
+    }
+
+    setIsLoading(false);
+  }, [signInWithBiometrics]);
 
   return (
     <KeyboardAvoidingView
@@ -135,6 +166,33 @@ export default function LoginScreen() {
             <Text style={styles.loginBtnText}>[ AUTENTICAR ]</Text>
           )}
         </Pressable>
+
+        {isBiometricAvailable && (
+          <>
+            <Pressable
+              onPress={handleBiometricLogin}
+              disabled={isLoading || !isBiometricEnabled}
+              style={({ pressed }) => [
+                styles.biometricBtn,
+                pressed && !isLoading && isBiometricEnabled && { opacity: 0.8 },
+                (isLoading || !isBiometricEnabled) && { opacity: 0.6 },
+              ]}
+            >
+              <Text style={styles.biometricBtnText}>ENTRAR COM BIOMETRIA</Text>
+            </Pressable>
+
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>ATIVAR BIOMETRIA NESTE DISPOSITIVO</Text>
+              <Switch
+                value={enableBiometricAfterLogin}
+                onValueChange={setEnableBiometricAfterLogin}
+                disabled={isLoading}
+                trackColor={{ false: `${C.mid}`, true: `${C.neon}80` }}
+                thumbColor={enableBiometricAfterLogin ? C.neon : C.text}
+              />
+            </View>
+          </>
+        )}
       </View>
 
       <Text style={styles.footer}>
@@ -235,6 +293,41 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: C.dark,
     letterSpacing: 3,
+  },
+  biometricBtn: {
+    borderWidth: 1,
+    borderColor: `${C.neon}80`,
+    paddingVertical: 14,
+    borderRadius: 3,
+    alignItems: 'center',
+    marginTop: 6,
+    backgroundColor: `${C.neon}10`,
+  },
+  biometricBtnText: {
+    fontFamily: MONO,
+    fontSize: 11,
+    color: C.neon,
+    letterSpacing: 2,
+    fontWeight: '700',
+  },
+  toggleRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: `${C.mid}80`,
+    borderRadius: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  toggleLabel: {
+    flex: 1,
+    fontFamily: MONO,
+    fontSize: 9,
+    color: C.text,
+    letterSpacing: 1.2,
+    marginRight: 8,
   },
   footer: {
     fontFamily: MONO,
