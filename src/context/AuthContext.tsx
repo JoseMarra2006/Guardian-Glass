@@ -9,10 +9,7 @@ import React, {
 import { supabase } from '../services/supabaseClient';
 import {
   saveSession,
-  getStoredSession,
   getRegisteredAccounts,
-  clearSession,
-  type StoredSession
 } from '../services/sessionService';
 import { signInWithRFID as performRFIDLogin } from '../services/rfidAuthService';
 
@@ -24,9 +21,14 @@ interface AuthContextValue {
   userName: string;
   userEmail: string;
   userId: string;
+  userRole: string; // Adicionado de volta para o HUD
+  deviceId: string; // Adicionado de volta para o HUD
   registeredAccounts: string[];
   signInWithRFID: (uid: string) => Promise<boolean>;
   signOut: () => Promise<void>;
+  // Placeholders para biometria (legado)
+  signInWithFaceRecognition: () => Promise<boolean>;
+  isFaceRecognitionAvailable: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -37,14 +39,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userEmail, setUserEmail] = useState('');
   const [userName, setUserName] = useState('');
   const [userId, setUserId] = useState('');
+  const [userRole, setUserRole] = useState('Operador');
+  const [deviceId, setDeviceId] = useState('GATE-PRO-001');
   const [registeredAccounts, setRegisteredAccounts] = useState<string[]>([]);
 
-  // Popula o estado a partir de um objeto de usuário Supabase
   const hydrateUser = useCallback((user: any) => {
     if (user) {
       setUserId(user.id);
       setUserEmail(user.email || '');
       setUserName(user.user_metadata?.full_name || user.email?.split('@')[0] || 'Operador');
+      setUserRole(user.user_metadata?.role || 'Especialista');
       setIsAuthenticated(true);
     } else {
       setUserId('');
@@ -57,19 +61,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const initializeAuth = useCallback(async () => {
     try {
       setIsLoading(true);
-      
-      const [accounts, { data: { session } }] = await Promise.all([
-        getRegisteredAccounts(),
-        supabase.auth.getSession()
-      ]);
-
+      const { data: { session } } = await supabase.auth.getSession();
+      const accounts = await getRegisteredAccounts();
       setRegisteredAccounts(accounts);
 
       if (session) {
         hydrateUser(session.user);
-        await saveSession(session, session.user.email);
-      } else {
-        hydrateUser(null);
       }
     } catch (error) {
       console.error('[PetroGate Auth] Erro ao inicializar:', error);
@@ -91,7 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         hydrateUser(null);
       }
-      setIsLoading(false); // <--- SEMPRE desliga o loading aqui
+      setIsLoading(false);
     });
 
     return () => subscription.unsubscribe();
@@ -101,34 +98,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       setIsLoading(true);
       const session = await performRFIDLogin(uid);
-      if (!session) {
-        setIsLoading(false);
-        return false;
-      }
-      // O evento SIGNED_IN do listener cuidará de salvar a sessão
-      return true;
+      return !!session;
     } catch (error) {
-      console.error('[PetroGate Auth] Erro no login RFID:', error);
       setIsLoading(false);
       return false;
     }
   }, []);
 
   const signOut = useCallback(async () => {
-    try {
-      if (userEmail) {
-        // Para RFID, o logout apenas limpa o estado local
-        // Mas o Supabase também deve ser notificado se for um logout total
-        await supabase.auth.signOut();
-        // Não limpamos obrigatoriamente a conta da lista, 
-        // para permitir re-login via RFID depois.
-      }
-      hydrateUser(null);
-    } catch (error) {
-      console.error('[PetroGate Auth] Erro ao sair:', error);
-      hydrateUser(null);
-    }
-  }, [userEmail, hydrateUser]);
+    await supabase.auth.signOut();
+    hydrateUser(null);
+  }, [hydrateUser]);
 
   const value: AuthContextValue = {
     isAuthenticated,
@@ -136,9 +116,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     userName,
     userEmail,
     userId,
+    userRole,
+    deviceId,
     registeredAccounts,
     signInWithRFID,
     signOut,
+    signInWithFaceRecognition: async () => false, // Mock
+    isFaceRecognitionAvailable: false, // Mock
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -148,4 +132,4 @@ export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) throw new Error('useAuth deve ser usado dentro de um AuthProvider');
   return context;
-}
+};
