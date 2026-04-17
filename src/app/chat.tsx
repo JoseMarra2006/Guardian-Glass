@@ -23,7 +23,6 @@ import {
   transcribeAudio,
 } from '../services/voiceService';
 import { Audio } from 'expo-av';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const C = {
   dark:   '#050C11',
@@ -44,18 +43,20 @@ interface DisplayMessage extends ChatMessage {
 }
 
 export default function ChatScreen() {
-  const { userEmail, userName } = useAuth();
+  const { 
+    userEmail, 
+    userName, 
+    signOut, 
+    messages, 
+    setMessages, 
+    chatHistory, 
+    setChatHistory 
+  } = useAuth();
+  
   const router = useRouter();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
-  const [messages, setMessages] = useState<DisplayMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content: `Olá, ${userName || 'Operador'}! 👋\n\nSou o PetroGate IA, seu assistente especializado em Petrobras e operações de óleo e gás.\n\nPosso te ajudar com:\n• Normas de segurança (NR-10, NR-33, NR-35)\n• Procedimentos operacionais\n• Informações sobre a Petrobras\n• Terminologia técnica do setor\n• E muito mais!\n\nComo posso te ajudar hoje?`,
-    },
-  ]);
   const [inputText, setInputText]     = useState('');
   const [isLoading, setIsLoading]     = useState(false);
   const [error, setError]             = useState('');
@@ -72,10 +73,7 @@ export default function ChatScreen() {
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   const flatListRef  = useRef<FlatList>(null);
-  const chatHistory  = useRef<ChatMessage[]>([]);
   const recordingRef = useRef<Audio.Recording | null>(null);
-
-  const STORAGE_KEY = `petrogate_chat_${userEmail || 'anonymous'}`;
 
   // Responsividade
   const isSmall       = width < 380;
@@ -115,50 +113,20 @@ export default function ChatScreen() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  // --- Persistência Local ---
+  // --- Memória em Sessão ---
   
-  // Carrega histórico ao montar
+  // Mensagem de boas-vindas inicial (se o chat estiver vazio)
   useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const savedData = await AsyncStorage.getItem(STORAGE_KEY);
-        if (savedData) {
-          const { messages: savedMessages, chatHistory: savedHistory } = JSON.parse(savedData);
-          if (savedMessages && savedMessages.length > 0) {
-            setMessages(savedMessages);
-            chatHistory.current = savedHistory || [];
-            console.log(`[Chat] Histórico carregado (${savedMessages.length} mensagens) para ${userEmail}`);
-          }
-        }
-      } catch (err) {
-        console.error('[Chat] Erro ao carregar histórico:', err);
-      }
-    };
-    loadHistory();
-  }, [userEmail]);
-
-  // Salva histórico ao mudar
-  useEffect(() => {
-    const saveHistory = async () => {
-      // Pequeno delay para garantir que o estado 'messages' foi atualizado
-      try {
-        if (messages.length > 1 || (messages.length === 1 && messages[0].id !== 'welcome')) {
-          const data = JSON.stringify({
-            messages,
-            chatHistory: chatHistory.current,
-          });
-          await AsyncStorage.setItem(STORAGE_KEY, data);
-        }
-      } catch (err) {
-        console.error('[Chat] Erro ao salvar histórico:', err);
-      }
-    };
-    
-    // Evita salvar se for apenas o estado inicial padrão e não houver mudança real
-    if (messages.length > 0) {
-      saveHistory();
+    if (messages.length === 0) {
+      setMessages([
+        {
+          id: 'welcome',
+          role: 'assistant',
+          content: `Olá, ${userName || 'Operador'}. Sou a PetroGate IA. Como posso auxiliar em sua jornada hoje?`,
+        },
+      ]);
     }
-  }, [messages, userEmail]);
+  }, [userName]);
 
   // Controle da pulsação neon durante gravação
   useEffect(() => {
@@ -201,12 +169,13 @@ export default function ChatScreen() {
     setIsLoading(true);
 
     try {
-      const aiText = await sendGroqMessage(chatHistory.current, text);
-      chatHistory.current = [
-        ...chatHistory.current,
+      const aiText = await sendGroqMessage(chatHistory, text);
+      const newHistory = [
+        ...chatHistory,
         { role: 'user', content: text },
         { role: 'assistant', content: aiText },
       ];
+      setChatHistory(newHistory);
       setMessages((prev) => [
         ...prev,
         { id: `ai-${Date.now()}`, role: 'assistant', content: aiText },
@@ -326,13 +295,27 @@ export default function ChatScreen() {
             </Text>
             <Text style={styles.headerSub}>GROQ · LLAMA 3.3 · 70B</Text>
           </View>
-          <View style={styles.dot} />
+          
+          <Pressable
+            onPress={async () => {
+              try {
+                await signOut();
+                router.replace('/');
+              } catch (err) {
+                console.error('[Chat] Erro ao sair:', err);
+              }
+            }}
+            hitSlop={12}
+            style={({ pressed }) => [styles.logoutBtn, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={styles.logoutTxt}>SAIR</Text>
+          </Pressable>
         </View>
 
         {/* Session banner */}
         <View style={styles.sessionBar}>
           <Text style={styles.sessionTxt} numberOfLines={1}>
-            🔒 {userEmail} · sem persistência
+            🔒 {userEmail || 'Sessão Ativa'} · com persistência local
           </Text>
         </View>
 
@@ -475,7 +458,19 @@ const styles = StyleSheet.create({
   headerCenter: { flex: 1, gap: 1 },
   headerTitle: { color: C.neon, fontFamily: MONO, fontWeight: '900', letterSpacing: 2 },
   headerSub:  { color: `${C.text}80`, fontFamily: MONO, fontSize: 8, letterSpacing: 1 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.neon },
+  logoutBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: `${C.error}70`,
+    borderRadius: 4,
+  },
+  logoutTxt: {
+    color: C.error,
+    fontFamily: MONO,
+    fontSize: 9,
+    fontWeight: '700',
+  },
 
   // ─── Session banner ────────────────────────────────────────────────────────
   sessionBar: {

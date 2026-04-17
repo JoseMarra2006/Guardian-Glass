@@ -91,7 +91,10 @@ export default function MobileDashboardScreen() {
 
       <View style={styles.footer}>
         <Pressable 
-          onPress={signOut} 
+          onPress={async () => {
+            console.log('[Dashboard] Solicitando encerramento de sessão...');
+            await signOut();
+          }} 
           android_ripple={{ color: 'rgba(255, 255, 255, 0.3)' }}
           style={({ pressed }) => [
             styles.signOutBtn, 

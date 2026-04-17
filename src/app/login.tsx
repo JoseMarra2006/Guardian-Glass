@@ -13,7 +13,6 @@ import {
 } from 'react-native';
 import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../context/AuthContext';
-import Constants from 'expo-constants';
 
 const { width } = Dimensions.get('window');
 
@@ -33,7 +32,6 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [wsStatus, setWsStatus] = useState<'off' | 'on'>('off');
   
   const { signInWithRFID } = useAuth();
 
@@ -66,41 +64,8 @@ export default function LoginScreen() {
     setIsLoading(false);
   }, [signInWithRFID]);
 
-  // AUTO-LISTENER: Escuta o RFID via WebSocket (Ponte com o PC)
-  React.useEffect(() => {
-    const debuggerHost = Constants.expoConfig?.hostUri;
-    const pcIp = debuggerHost?.split(':')[0] || '10.112.48.48';
-    
-    console.log(`[PetroGate RFID] Conectando na ponte em: ws://${pcIp}:8082`);
-    const ws = new WebSocket(`ws://${pcIp}:8082`);
-
-    ws.onopen = () => {
-      console.log('[PetroGate RFID] Conectado à ponte serial do PC.');
-      setWsStatus('on');
-    };
-
-    ws.onmessage = async (e) => {
-      const uid = e.data;
-      // Só tenta logar se já não estiver carregando
-      if (uid && !isLoading) {
-        setIsLoading(true);
-        try {
-          const ok = await signInWithRFID(uid);
-          if (!ok) {
-            Alert.alert('Acesso Negado', `O cartão ${uid} não possui vínculo no Supabase.`);
-          }
-        } finally {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    ws.onerror = () => {
-      setWsStatus('off');
-    };
-
-    return () => ws.close();
-  }, [signInWithRFID, isLoading]);
+  // O listener RFID agora é gerenciado globalmente no AuthContext.tsx
+  // Isso garante que a conexão via ponte seja persistente em todo o app.
 
   return (
     <KeyboardAvoidingView
@@ -154,20 +119,11 @@ export default function LoginScreen() {
 
         <View style={styles.divider} />
 
-        <Pressable
-          onPress={handleRFIDLogin}
-          disabled={isLoading}
-          android_ripple={{ color: 'rgba(255, 255, 255, 0.3)' }}
-          style={({ pressed }) => [
-            styles.rfidBtn,
-            pressed && Platform.OS === 'ios' && { opacity: 0.7 },
-            isLoading && { opacity: 0.6 },
-          ]}
-        >
+        <View style={[styles.rfidBtn, isLoading && { opacity: 0.6 }]}>
           <Text style={styles.rfidBtnText}>
-            {wsStatus === 'on' ? '🟢 AGUARDANDO CARTÃO...' : 'APROXIMAR CARTÃO RFID'}
+            APROXIMAR CARTÃO RFID
           </Text>
-        </Pressable>
+        </View>
         
         <Text style={styles.info}>
           Aproxime o cartão do leitor Arduino para autenticação rápida.

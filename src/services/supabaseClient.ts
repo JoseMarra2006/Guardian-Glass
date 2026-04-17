@@ -44,7 +44,9 @@
  * ```
  */
 
+import 'react-native-url-polyfill/auto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── Validação de Configuração ───────────────────────────────────────────────
 
@@ -208,6 +210,7 @@ export const supabase: SupabaseClient<Database> = createClient<Database>(
   SUPABASE_ANON_KEY,
   {
     auth: {
+      storage: AsyncStorage,
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false, // SEGURANÇA: desabilita leitura de token via URL
