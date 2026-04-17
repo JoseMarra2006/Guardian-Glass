@@ -19,10 +19,10 @@ const { width } = Dimensions.get('window');
 
 const C = {
   bg:     '#050C11',
-  mid:    '#1A3A4A',
-  neon:   '#00FFB2',
-  text:   '#8BBCCC',
-  white:  '#E8F4F8',
+  mid:    '#2A4A5E',  // Lighter
+  neon:   '#4DFFC9',  // Brighter mint green
+  text:   '#9DCCDE',
+  white:  '#EEF6FA',
   error:  '#FF4560',
 } as const;
 
@@ -141,17 +141,15 @@ export default function LoginScreen() {
         <Pressable
           onPress={handlePasswordLogin}
           disabled={isLoading}
-          style={({ pressed }) => [
-            styles.loginBtn,
-            pressed && { opacity: 0.8 },
-            isLoading && { opacity: 0.6 },
-          ]}
+          android_ripple={{ color: 'rgba(0, 0, 0, 0.2)' }}
         >
-          {isLoading ? (
-            <ActivityIndicator color={C.bg} />
-          ) : (
-            <Text style={styles.loginBtnText}>ENTRAR COM SENHA</Text>
-          )}
+          <View style={[styles.loginBtn, isLoading && { opacity: 0.6 }]}>
+            {isLoading ? (
+              <ActivityIndicator color="#000000" />
+            ) : (
+              <Text style={styles.loginBtnText}>ENTRAR COM SENHA</Text>
+            )}
+          </View>
         </Pressable>
 
         <View style={styles.divider} />
@@ -159,9 +157,10 @@ export default function LoginScreen() {
         <Pressable
           onPress={handleRFIDLogin}
           disabled={isLoading}
+          android_ripple={{ color: 'rgba(255, 255, 255, 0.3)' }}
           style={({ pressed }) => [
             styles.rfidBtn,
-            pressed && { opacity: 0.8 },
+            pressed && Platform.OS === 'ios' && { opacity: 0.7 },
             isLoading && { opacity: 0.6 },
           ]}
         >
@@ -226,29 +225,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   loginBtn: {
-    backgroundColor: C.neon,
+    backgroundColor: '#FFFFFF',
     paddingVertical: 16,
     borderRadius: 4,
     alignItems: 'center',
     marginTop: 10,
+    overflow: 'hidden',
   },
   loginBtnText: {
-    color: C.bg,
+    color: '#000000',
     fontWeight: '900',
     letterSpacing: 1.5,
     fontSize: 13,
   },
   rfidBtn: {
-    backgroundColor: 'transparent',
+    backgroundColor: '#1E3C4D',
     borderWidth: 1,
-    borderColor: C.neon,
+    borderColor: '#3A6076',
     paddingVertical: 14,
     borderRadius: 4,
     alignItems: 'center',
     marginTop: 10,
+    overflow: 'hidden',
   },
   rfidBtnText: {
-    color: C.neon,
+    color: '#EEF6FA', // Brighter text for better contrast on the new background
     fontWeight: '700',
     letterSpacing: 1,
     fontSize: 12,

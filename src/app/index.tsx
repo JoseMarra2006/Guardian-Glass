@@ -8,11 +8,11 @@ import { useAuth } from '../context/AuthContext';
 
 const C = {
   dark: '#050C11',
-  panel: '#0D1F2D',
-  mid: '#1A3A4A',
-  neon: '#00FFB2',
-  text: '#8BBCCC',
-  white: '#E8F4F8',
+  panel: '#122737',
+  mid: '#2A4A5E',
+  neon: '#4DFFC9', // Bem mais claro (mint bright)
+  text: '#9DCCDE',
+  white: '#EEF6FA',
   warning: '#FFB800',
 } as const;
 
@@ -80,18 +80,24 @@ export default function MobileDashboardScreen() {
           </Text>
           <Pressable
             onPress={() => router.push('/chat')}
-            style={({ pressed }) => [
-              styles.chatButton,
-              pressed && { opacity: 0.85 },
-            ]}
+            android_ripple={{ color: 'rgba(0, 0, 0, 0.2)' }}
           >
-            <Text style={styles.chatButtonText}>⬡ ABRIR CHAT COM IA</Text>
+            <View style={styles.chatButton}>
+              <Text style={styles.chatButtonText}>⬡ ABRIR CHAT COM IA</Text>
+            </View>
           </Pressable>
         </View>
       </ScrollView>
 
       <View style={styles.footer}>
-        <Pressable onPress={signOut} style={({ pressed }) => [styles.signOutBtn, pressed && { opacity: 0.85 }]}>
+        <Pressable 
+          onPress={signOut} 
+          android_ripple={{ color: 'rgba(255, 255, 255, 0.3)' }}
+          style={({ pressed }) => [
+            styles.signOutBtn, 
+            pressed && Platform.OS === 'ios' && { opacity: 0.7 }
+          ]}
+        >
           <Text style={styles.signOutText}>ENCERRAR SESSÃO</Text>
         </Pressable>
       </View>
@@ -179,15 +185,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   chatButton: {
-    backgroundColor: C.neon,
+    backgroundColor: '#FFFFFF',
     borderRadius: 4,
     paddingVertical: 13,
     alignItems: 'center',
     marginTop: 4,
+    overflow: 'hidden',
   },
   chatButtonText: {
     fontFamily: MONO,
-    color: C.dark,
+    color: '#000000',
     fontSize: 11,
     letterSpacing: 1.5,
     fontWeight: '900',
@@ -200,11 +207,13 @@ const styles = StyleSheet.create({
     backgroundColor: `${C.panel}CC`,
   },
   signOutBtn: {
+    backgroundColor: '#1E3C4D',
     borderWidth: 1,
-    borderColor: `${C.mid}90`,
+    borderColor: '#3A6076',
     borderRadius: 4,
     paddingVertical: 12,
     alignItems: 'center',
+    overflow: 'hidden',
   },
   signOutText: {
     fontFamily: MONO,

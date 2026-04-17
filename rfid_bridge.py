@@ -8,12 +8,13 @@ import socket
 BAUD_RATE = 9600
 WS_PORT = 8082
 
+connected_clients = set()
+
 def get_local_ip():
     """ 
     Descobre o IP local deste computador na rede local/Wi-Fi.
     """
     try:
-        # Cria um socket UDP (não faz conexão real) para identificar a interface de rede ativa
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
@@ -36,26 +37,49 @@ def find_arduino_port():
         return ports[0].device
     return None
 
-async def bridge(websocket):
+async def ws_handler(websocket):
     print(f"\n[Ponte] Celular conectado!")
+    connected_clients.add(websocket)
+    try:
+        await websocket.wait_closed()
+    finally:
+        connected_clients.remove(websocket)
+        print(f"[Ponte] Celular desconectado.")
+
+async def serial_reader():
     port = find_arduino_port()
     if not port:
         print("[Erro] Arduino não encontrado! Verifique o cabo USB.")
         return
 
-    try:
-        with serial.Serial(port, BAUD_RATE, timeout=0.1) as ser:
-            print(f"[Ponte] Lendo Serial em {port}...")
-            while True:
-                if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line.startswith("RFID_UID:"):
-                        uid = line.split(":")[1]
-                        print(f"[Ponte] Cartão Lido: {uid}")
-                        await websocket.send(uid)
-                await asyncio.sleep(0.05)
-    except Exception as e:
-        print(f"[Erro] Falha na Serial: {e}")
+    while True:
+        try:
+            with serial.Serial(port, BAUD_RATE, timeout=0.1) as ser:
+                print(f"[Ponte] Lendo Serial em {port}...")
+                while True:
+                    if ser.in_waiting > 0:
+                        line = ser.readline().decode('utf-8', errors='ignore').strip()
+                        if line.startswith("RFID_UID:"):
+                            uid = line.split(":")[1]
+                            print(f"[Ponte] Cartão Lido: {uid}")
+                            
+                            # Envia apenas se houver clientes conectados (tela de login aberta)
+                            if connected_clients:
+                                for ws in list(connected_clients):
+                                    try:
+                                        await ws.send(uid)
+                                    except Exception:
+                                        pass
+                            else:
+                                print(f"[Ponte] (Ignorado) O app não está na tela de login.")
+                    
+                    await asyncio.sleep(0.05)
+        except serial.SerialException as e:
+            print(f"[Erro] Conexão Serial perdida: {e}. Tentando reconectar em 3s...")
+            await asyncio.sleep(3)
+        except Exception as e:
+            print(f"[Erro] Erro inesperado na Serial: {e}")
+            await asyncio.sleep(3)
 
 async def main():
     my_ip = get_local_ip()
@@ -67,9 +91,11 @@ async def main():
     print(f" URL para o App: ws://{my_ip}:{WS_PORT}")
     print(f"------------------------------------------")
     
-    async with websockets.serve(bridge, "0.0.0.0", WS_PORT):
-        print(f"[Status] Aguardando conexão do celular...")
-        await asyncio.Future()
+    # Inicia o servidor websocket em background
+    server = await websockets.serve(ws_handler, "0.0.0.0", WS_PORT)
+    
+    # Inicia a leitura da serial (loop infinito)
+    await serial_reader()
 
 if __name__ == "__main__":
     try:
