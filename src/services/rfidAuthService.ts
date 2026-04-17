@@ -25,7 +25,7 @@ export async function signInWithRFID(uid: string): Promise<Session | null> {
     if (uid === 'BA0B9816' || uid === 'A6AE75F8' || uid === 'CA7E7919') email = 'teste3@petrobras.com.br';
 
     if (!email) {
-      console.error('[PetroGate RFID] Cartão não mapeado no código.');
+      console.error('[PetroGate RFID] Cartão não mapeado!');
       return null;
     }
 
