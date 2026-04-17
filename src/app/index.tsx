@@ -1,7 +1,8 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { ScrollView, StyleSheet, Text, View, Platform, Pressable } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
 import { useAuth } from '../context/AuthContext';
 
@@ -27,24 +28,17 @@ function SecurityTag({ label, value }: { label: string; value: string }) {
 }
 
 export default function MobileDashboardScreen() {
+  const router = useRouter();
   const {
     userName,
     userEmail,
     userRole,
     deviceId,
     signOut,
-    signInWithFaceRecognition,
     isFaceRecognitionAvailable,
   } = useAuth();
 
-  const [faceAuthStatus, setFaceAuthStatus] = useState<'idle' | 'ok' | 'fail'>('idle');
-
   const roleSnapshot = useMemo(() => (userRole || 'Operador').toUpperCase(), [userRole]);
-
-  const handleFaceRevalidation = useCallback(async () => {
-    const success = await signInWithFaceRecognition();
-    setFaceAuthStatus(success ? 'ok' : 'fail');
-  }, [signInWithFaceRecognition]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -78,29 +72,21 @@ export default function MobileDashboardScreen() {
           </View>
         </View>
 
+        {/* IA Chat Card */}
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Revalidação de Identidade</Text>
+          <Text style={styles.sectionTitle}>PetroGate IA</Text>
           <Text style={styles.helpText}>
-            Para operações sensíveis, revalide com reconhecimento facial. Nenhum dado biométrico é coletado ou armazenado.
+            Converse com a IA especializada em Petrobras e operações de óleo e gás. Powered by Groq · LLaMA 3.3 70B.
           </Text>
           <Pressable
-            onPress={handleFaceRevalidation}
-            disabled={!isFaceRecognitionAvailable}
+            onPress={() => router.push('/chat')}
             style={({ pressed }) => [
-              styles.faceButton,
-              pressed && isFaceRecognitionAvailable && { opacity: 0.85 },
-              !isFaceRecognitionAvailable && { opacity: 0.55 },
+              styles.chatButton,
+              pressed && { opacity: 0.85 },
             ]}
           >
-            <Text style={styles.faceButtonText}>REVALIDAR COM RECONHECIMENTO FACIAL</Text>
+            <Text style={styles.chatButtonText}>⬡ ABRIR CHAT COM IA</Text>
           </Pressable>
-
-          {faceAuthStatus === 'ok' && (
-            <Text style={styles.okText}>Identidade facial confirmada com sucesso.</Text>
-          )}
-          {faceAuthStatus === 'fail' && (
-            <Text style={styles.failText}>Falha na validação facial. Fallback para autenticação por senha.</Text>
-          )}
         </View>
       </ScrollView>
 
@@ -192,32 +178,19 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginBottom: 8,
   },
-  faceButton: {
-    borderWidth: 1,
-    borderColor: `${C.neon}80`,
-    backgroundColor: `${C.neon}15`,
+  chatButton: {
+    backgroundColor: C.neon,
     borderRadius: 4,
-    paddingVertical: 12,
+    paddingVertical: 13,
     alignItems: 'center',
+    marginTop: 4,
   },
-  faceButtonText: {
+  chatButtonText: {
     fontFamily: MONO,
-    color: C.neon,
-    fontSize: 10,
-    letterSpacing: 1.2,
-    fontWeight: '700',
-  },
-  okText: {
-    fontFamily: MONO,
-    color: C.neon,
-    fontSize: 9,
-    marginTop: 8,
-  },
-  failText: {
-    fontFamily: MONO,
-    color: C.warning,
-    fontSize: 9,
-    marginTop: 8,
+    color: C.dark,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    fontWeight: '900',
   },
   footer: {
     paddingHorizontal: 16,
