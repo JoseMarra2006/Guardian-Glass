@@ -23,6 +23,7 @@ import {
   transcribeAudio,
 } from '../services/voiceService';
 import { Audio } from 'expo-av';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const C = {
   dark:   '#050C11',
@@ -74,6 +75,8 @@ export default function ChatScreen() {
   const chatHistory  = useRef<ChatMessage[]>([]);
   const recordingRef = useRef<Audio.Recording | null>(null);
 
+  const STORAGE_KEY = `petrogate_chat_${userEmail || 'anonymous'}`;
+
   // Responsividade
   const isSmall       = width < 380;
   const fontBase      = isSmall ? 12 : 13;
@@ -111,6 +114,51 @@ export default function ChatScreen() {
     }
     return () => clearInterval(interval);
   }, [isRecording]);
+
+  // --- Persistência Local ---
+  
+  // Carrega histórico ao montar
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const savedData = await AsyncStorage.getItem(STORAGE_KEY);
+        if (savedData) {
+          const { messages: savedMessages, chatHistory: savedHistory } = JSON.parse(savedData);
+          if (savedMessages && savedMessages.length > 0) {
+            setMessages(savedMessages);
+            chatHistory.current = savedHistory || [];
+            console.log(`[Chat] Histórico carregado (${savedMessages.length} mensagens) para ${userEmail}`);
+          }
+        }
+      } catch (err) {
+        console.error('[Chat] Erro ao carregar histórico:', err);
+      }
+    };
+    loadHistory();
+  }, [userEmail]);
+
+  // Salva histórico ao mudar
+  useEffect(() => {
+    const saveHistory = async () => {
+      // Pequeno delay para garantir que o estado 'messages' foi atualizado
+      try {
+        if (messages.length > 1 || (messages.length === 1 && messages[0].id !== 'welcome')) {
+          const data = JSON.stringify({
+            messages,
+            chatHistory: chatHistory.current,
+          });
+          await AsyncStorage.setItem(STORAGE_KEY, data);
+        }
+      } catch (err) {
+        console.error('[Chat] Erro ao salvar histórico:', err);
+      }
+    };
+    
+    // Evita salvar se for apenas o estado inicial padrão e não houver mudança real
+    if (messages.length > 0) {
+      saveHistory();
+    }
+  }, [messages, userEmail]);
 
   // Controle da pulsação neon durante gravação
   useEffect(() => {
