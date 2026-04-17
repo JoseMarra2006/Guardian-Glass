@@ -1,0 +1,6 @@
+# Python dependencies para o bridge RFID e demais scripts
+pyserial>=3.5          # fornece `serial` e `serial.tools.list_ports`
+websockets>=12.0       # comunicação WebSocket usada em rfid_bridge.py
+# Caso precise de outras libs no futuro, adicione aqui:
+# python-dotenv>=1.0
+# requests>=2.31

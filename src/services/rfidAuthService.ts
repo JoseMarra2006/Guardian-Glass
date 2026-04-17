@@ -21,9 +21,8 @@ export async function signInWithRFID(uid: string): Promise<Session | null> {
   try {
     // SOLUÇÃO ZERO-TABELA: Mapeamento direto no código para o seu protótipo
     let email = null;
-    if (uid === '1ACE847F') email = 'teste@petrobras.com.br';
-    if (uid === 'BA0B9816') email = 'teste2@petrobras.com.br';
-    if (uid === 'CA7E7919') email = 'teste3@petrobras.com.br'; 
+    if (uid === '1ACE847F' || uid === 'CBEA540C') email = 'teste@petrobras.com.br';
+    if (uid === 'BA0B9816' || uid === 'A6AE75F8' || uid === 'CA7E7919') email = 'teste3@petrobras.com.br';
 
     if (!email) {
       console.error('[PetroGate RFID] Cartão não mapeado no código.');
@@ -35,7 +34,7 @@ export async function signInWithRFID(uid: string): Promise<Session | null> {
     // Mapeamento de senhas específicas
     let passwordToUse = 'PetroGate2026'; 
     if (email === 'teste@petrobras.com.br') passwordToUse = 'teste';
-    if (email === 'teste2@petrobras.com.br') passwordToUse = 'Teste';
+    // if (email === 'teste2@petrobras.com.br') passwordToUse = 'teste2';
     if (email === 'teste3@petrobras.com.br') passwordToUse = 'teste3';
 
     console.log(`[PetroGate RFID] Iniciando Autenticação Supabase para ${email}...`);
