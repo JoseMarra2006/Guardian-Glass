@@ -169,10 +169,13 @@ export async function requestMicrophonePermission(): Promise<boolean> {
 /**
  * Inicia a gravação de áudio no armazenamento local do dispositivo.
  *
+ * @param onStatusUpdate - Callback opcional para monitorar o status e metering
  * @throws VoiceServiceError com código PERMISSION_DENIED ou RECORDING_FAILED
  * @returns Instância de Audio.Recording ativa
  */
-export async function startRecording(): Promise<Audio.Recording> {
+export async function startRecording(
+  onStatusUpdate?: (status: Audio.RecordingStatus) => void
+): Promise<Audio.Recording> {
   const hasPermission = await requestMicrophonePermission();
 
   if (!hasPermission) {
@@ -185,15 +188,27 @@ export async function startRecording(): Promise<Audio.Recording> {
   try {
     console.log('[VoiceService] Iniciando gravação de áudio...');
 
-    const { recording } = await Audio.Recording.createAsync(
-      RECORDING_OPTIONS,
-      (status) => {
-        // Callback de status durante gravação — pode ser usado para nível de áudio
-        if (status.isRecording && status.metering !== undefined) {
-          // status.metering: -160 (silêncio) a 0 (máximo) em dB
-          // Útil para animações de waveform em tempo real no componente VoiceInterface
-        }
+    // Habilita metering (essencial para detecção de silêncio e waveforms)
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+    });
+
+    const recordingOptions: any = {
+      ...RECORDING_OPTIONS,
+      android: {
+        ...RECORDING_OPTIONS.android,
+        meteringEnabled: true,
       },
+      ios: {
+        ...RECORDING_OPTIONS.ios,
+        meteringEnabled: true,
+      },
+    };
+
+    const { recording } = await Audio.Recording.createAsync(
+      recordingOptions,
+      onStatusUpdate,
       100 // Frequência de atualização de status: 100ms
     );
 
@@ -277,144 +292,96 @@ export async function stopRecording(
 // ─── Transcrição ──────────────────────────────────────────────────────────────
 
 /**
- * Converte o áudio local em texto via API de transcrição.
- *
- * ──────────────────────────────────────────────────────────────────────────────
- * REGRA DE OURO: Apenas o TEXTO resultante sai do dispositivo, NUNCA o áudio.
- * ──────────────────────────────────────────────────────────────────────────────
- *
- * IMPLEMENTAÇÃO EM PRODUÇÃO (descomente e configure):
- * ```
- * const formData = new FormData();
- * formData.append('file', { uri: result.uri, name: 'audio.m4a', type: 'audio/m4a' });
- * formData.append('model', 'whisper-1');
- * formData.append('language', 'pt');
- *
- * // VIA EDGE FUNCTION (recomendado — JWT validation server-side):
- * const res = await fetch(EXPO_PUBLIC_TRANSCRIPTION_EDGE_URL, {
- *   method: 'POST',
- *   headers: { Authorization: `Bearer ${session.access_token}` },
- *   body: formData,
- * });
- * ```
+ * Converte o áudio local em texto via API de transcrição do Groq (Whisper).
  *
  * @param result - VoiceRecordingResult com URI local do áudio
- * @returns TranscriptionResult com texto (único dado que entra no pipeline AI)
+ * @returns TranscriptionResult com texto transcrito
  * @throws VoiceServiceError se a transcrição falhar
  */
 export async function transcribeAudio(
   result: VoiceRecordingResult
 ): Promise<TranscriptionResult> {
   const startTime = Date.now();
+  const apiKey = process.env.EXPO_PUBLIC_GROQ_API_KEY;
 
-  console.log('[VoiceService] Iniciando transcrição de áudio...', {
+  console.log('[VoiceService] Iniciando transcrição real via Groq Whisper...', {
     audioUri: result.uri,
     durationMs: result.durationMs,
-    destino: 'Processamento local (simulação) — áudio NÃO transmitido',
   });
 
-  // ── PRODUÇÃO: Endpoint do Edge Function proxy (Supabase → Whisper) ──
-  const TRANSCRIPTION_ENDPOINT = process.env.EXPO_PUBLIC_TRANSCRIPTION_ENDPOINT;
-
-  if (TRANSCRIPTION_ENDPOINT) {
-    return transcribeViaEdgeFunction(result, TRANSCRIPTION_ENDPOINT, startTime);
+  if (!apiKey) {
+    throw new VoiceServiceError(
+      'TRANSCRIPTION_FAILED',
+      'Chave de API (EXPO_PUBLIC_GROQ_API_KEY) não encontrada no ambiente.'
+    );
   }
 
-  // ── SIMULAÇÃO DE DESENVOLVIMENTO ──────────────────────────────────────────
-  // Simula delay de processamento proporcional à duração do áudio
-  // (Whisper real: ~1s para cada 30s de áudio)
-  const simulatedDelay = Math.min(
-    Math.max(result.durationMs * 0.4, 800),
-    2500
-  );
-
-  console.log(`[VoiceService] [SIMULAÇÃO] Aguardando ${simulatedDelay}ms (transcr. simulada)...`);
-  await new Promise<void>((resolve) => setTimeout(resolve, simulatedDelay));
-
-  const randomQuery = PETROLEUM_SAMPLE_QUERIES[
-    Math.floor(Math.random() * PETROLEUM_SAMPLE_QUERIES.length)
-  ];
-
-  const processingTimeMs = Date.now() - startTime;
-
-  console.log('[VoiceService] [SIMULAÇÃO] Transcrição concluída.', {
-    textTranscrito: randomQuery,
-    processingTimeMs,
-    isSimulated: true,
-    note: 'Configure EXPO_PUBLIC_TRANSCRIPTION_ENDPOINT para usar transcrição real',
-  });
-
-  return {
-    text: randomQuery,
-    confidence: 0.94,
-    processingTimeMs,
-    isSimulated: true,
-  };
-}
-
-/**
- * Envia o áudio para um Supabase Edge Function que atua como proxy autenticado
- * para a API do OpenAI Whisper. O Edge Function valida o JWT antes de encaminhar.
- *
- * @internal — Chamado apenas quando EXPO_PUBLIC_TRANSCRIPTION_ENDPOINT está configurado
- */
-async function transcribeViaEdgeFunction(
-  result: VoiceRecordingResult,
-  endpoint: string,
-  startTime: number
-): Promise<TranscriptionResult> {
   try {
     const formData = new FormData();
-    formData.append('audio', {
-      uri: result.uri,
-      name: 'audio.m4a',
-      type: 'audio/x-m4a',
-    } as unknown as Blob);
-    formData.append('language', 'pt');
-    formData.append('duration_ms', String(result.durationMs));
 
-    const response = await fetch(endpoint, {
+    /**
+     * IMPORTANTE para React Native:
+     * Ao anexar arquivos em FormData, o objeto DEVE conter:
+     * uri, name, type. Caso contrário o fetch não envia o blob corretamente.
+     */
+    formData.append('file', {
+      uri: result.uri,
+      name: 'recording.m4a',
+      type: 'audio/m4a',
+    } as any);
+
+    formData.append('model', 'whisper-large-v3');
+    formData.append('language', 'pt');
+    formData.append('response_format', 'json');
+
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
-        // JWT da sessão Supabase para autenticar no Edge Function
-        // Authorization: `Bearer ${session.access_token}`,
-        'X-PetroGate-Client': 'petrogate-ar-voice/2.0',
+        'Authorization': `Bearer ${apiKey}`,
+        // Importante: Não defina Content-Type manualmente ao usar FormData no RN/fetch
       },
       body: formData,
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('[VoiceService] ERRO na API de transcrição:', response.status, errorText);
+      console.error('[VoiceService] Erro Groq Whisper:', response.status, errorText);
       throw new VoiceServiceError(
         'TRANSCRIPTION_FAILED',
-        `API de transcrição retornou erro ${response.status}. Tente novamente.`
+        `Erro na transcrição (${response.status}). Verifique a conexão e API Key.`
       );
     }
 
     const data = await response.json();
-    const text: string = data?.text ?? data?.transcript ?? '';
+    const text = data.text || '';
 
     if (!text.trim()) {
       throw new VoiceServiceError(
         'TRANSCRIPTION_FAILED',
-        'A transcrição não retornou texto. Verifique se o áudio está audível.'
+        'Nenhuma fala detectada no áudio enviado.'
       );
     }
 
+    const processingTimeMs = Date.now() - startTime;
+
+    console.log('[VoiceService] Transcrição concluída com sucesso:', {
+      text,
+      processingTimeMs,
+    });
+
     return {
       text: text.trim(),
-      confidence: data?.confidence ?? 1.0,
-      processingTimeMs: Date.now() - startTime,
+      confidence: 0.99,
+      processingTimeMs,
       isSimulated: false,
     };
 
   } catch (error) {
     if (error instanceof VoiceServiceError) throw error;
-    console.error('[VoiceService] ERRO de rede na transcrição:', error);
+    console.error('[VoiceService] Erro fatal na transcrição:', error);
     throw new VoiceServiceError(
       'TRANSCRIPTION_FAILED',
-      'Serviço de transcrição temporariamente indisponível. Verifique a conexão.',
+      'Falha ao conectar com o serviço de voz do Groq.',
       error
     );
   }
